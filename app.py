@@ -23,10 +23,16 @@ import os
 print(os.getcwd())
 print("THIS IS SQLITE VERSION")
 
-from flask import Flask, g, redirect, render_template_string, request, url_for
+from flask import Flask, g, redirect, render_template_string, request, session, url_for
+from functools import wraps
 
 app = Flask(__name__)
+app.secret_key = "azzam-autocare-secret-key-change-later"
+
 DATABASE = "garage.db"
+
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "1234"
 
 
 # -----------------------------
@@ -243,7 +249,75 @@ def page(title: str, content: str) -> str:
     return render_template_string(BASE_HTML, title=title, content=content)
 
 
+def login_required(view_function):
+    @wraps(view_function)
+    def wrapped_view(*args, **kwargs):
+        if "user" not in session:
+            return redirect(url_for("login"))
+        return view_function(*args, **kwargs)
+
+    return wrapped_view
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = ""
+
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
+
+        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+            session["user"] = username
+            return redirect(url_for("dashboard"))
+
+        error = "Invalid username or password. Please try again."
+
+    content = f"""
+    <div class="row justify-content-center">
+        <div class="col-md-5 col-lg-4">
+            <div class="card p-4 mt-5">
+                <div class="text-center mb-4">
+                    <h2 class="fw-bold mb-1">Azzam Autocare</h2>
+                    <p class="text-muted mb-0">Login to quotation system</p>
+                </div>
+
+                <form method="POST">
+                    <div class="mb-3">
+                        <label class="form-label">Username</label>
+                        <input type="text" name="username" class="form-control" placeholder="admin" required autofocus>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Password</label>
+                        <input type="password" name="password" class="form-control" placeholder="Password" required>
+                    </div>
+
+                    <button type="submit" class="btn btn-warning btn-rounded fw-semibold w-100">
+                        Login
+                    </button>
+                </form>
+
+                <div class="text-danger small mt-3 text-center">{error}</div>
+                <div class="text-muted small mt-4 text-center">
+                    Demo login: admin / 1234
+                </div>
+            </div>
+        </div>
+    </div>
+    """
+
+    return page("Login - Azzam Autocare", content)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
 @app.route("/")
+@login_required
 def dashboard():
     db = get_db()
     quotations = db.execute("SELECT * FROM quotations ORDER BY id DESC").fetchall()
@@ -276,8 +350,9 @@ def dashboard():
             <h1 class="fw-bold mb-1">Azzam Autocare Dashboard</h1>
             <p class="text-muted mb-0">Manage repair quotation and invoice workflow.</p>
         </div>
-        <div class="d-grid d-md-block">
+        <div class="d-grid d-md-flex gap-2">
             <a href="/quotation/new" class="btn btn-warning btn-rounded fw-semibold">+ New Quotation</a>
+            <a href="/logout" class="btn btn-outline-dark btn-rounded">Logout</a>
         </div>
     </div>
 
@@ -319,6 +394,7 @@ def dashboard():
 
 
 @app.route("/quotation/new", methods=["GET", "POST"])
+@login_required
 def new_quotation():
     if request.method == "POST":
         db = get_db()
@@ -480,6 +556,7 @@ def new_quotation():
 
 
 @app.route("/quotation/<int:quotation_id>")
+@login_required
 def view_quotation(quotation_id: int):
     q = get_quotation(quotation_id)
     if not q:
@@ -600,6 +677,7 @@ def view_quotation(quotation_id: int):
 
 
 @app.route("/quotation/<int:quotation_id>/approve")
+@login_required
 def approve_quotation(quotation_id: int):
     db = get_db()
     db.execute("UPDATE quotations SET status = 'Approved' WHERE id = ?", (quotation_id,))
@@ -608,6 +686,7 @@ def approve_quotation(quotation_id: int):
 
 
 @app.route("/quotation/<int:quotation_id>/invoice")
+@login_required
 def generate_invoice(quotation_id: int):
     db = get_db()
     inv_no = invoice_number(quotation_id)
@@ -620,6 +699,7 @@ def generate_invoice(quotation_id: int):
 
 
 @app.route("/invoice/<int:quotation_id>")
+@login_required
 def view_invoice(quotation_id: int):
     q = get_quotation(quotation_id)
     if not q or not q["invoice_no"]:
@@ -748,8 +828,23 @@ def run_tests() -> None:
     client = app.test_client()
 
     dashboard_response = client.get("/")
-    assert dashboard_response.status_code == 200
-    assert b"Azzam Autocare Dashboard" in dashboard_response.data
+    assert dashboard_response.status_code == 302
+
+    bad_login_response = client.post(
+        "/login",
+        data={"username": "admin", "password": "wrong"},
+        follow_redirects=True,
+    )
+    assert bad_login_response.status_code == 200
+    assert b"Invalid username or password" in bad_login_response.data
+
+    good_login_response = client.post(
+        "/login",
+        data={"username": "admin", "password": "1234"},
+        follow_redirects=True,
+    )
+    assert good_login_response.status_code == 200
+    assert b"Azzam Autocare Dashboard" in good_login_response.data
 
     create_response = client.post(
         "/quotation/new",
